@@ -1,0 +1,12 @@
+{
+  "ver": 1,
+  "name": "Page TOC",
+  "icon": "list-details",
+  "description": "Table of contents for the current page: keyboard popup, floating right rail, and sidebar widget.",
+  "custom": {
+    "popup": true,
+    "rail": true,
+    "sidebar": true,
+    "min_headings": 1
+  }
+}
