@@ -1013,10 +1013,15 @@ export class Plugin extends AppPlugin {
                 bar.appendChild(el);
             }
         }
-        // per-frame y updates (docking/pushing move crumbs without a rebuild)
+        // per-frame updates (docking/pushing move crumbs without a rebuild);
+        // crumbs truncate at the editor content's right edge, not the panel's
+        const contentRight = rowEls[0].getBoundingClientRect().right;
+        const rightOff = Math.max(0, Math.round(sr.right - contentRight));
         for (const el of bar.children) {
             const d = display.find((x) => x.guid === el.dataset.guid);
-            if (d) el.style.top = `${d.top - barTop}px`;
+            if (!d) continue;
+            el.style.top = `${d.top - barTop}px`;
+            el.style.right = `${rightOff}px`;
         }
     }
 

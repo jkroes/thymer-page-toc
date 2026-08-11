@@ -1017,9 +1017,13 @@ var plugins = (() => {
           bar.appendChild(el);
         }
       }
+      const contentRight = rowEls[0].getBoundingClientRect().right;
+      const rightOff = Math.max(0, Math.round(sr.right - contentRight));
       for (const el of bar.children) {
         const d = display.find((x) => x.guid === el.dataset.guid);
-        if (d) el.style.top = `${d.top - barTop}px`;
+        if (!d) continue;
+        el.style.top = `${d.top - barTop}px`;
+        el.style.right = `${rightOff}px`;
       }
     }
     // ---- 3) SIDEBAR WIDGET ----
