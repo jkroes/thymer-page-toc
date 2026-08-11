@@ -2,11 +2,12 @@
   "ver": 1,
   "name": "Page TOC",
   "icon": "list-details",
-  "description": "Table of contents for the current page: keyboard popup, floating right rail, and sidebar widget.",
+  "description": "Table of contents for the current page: keyboard popup, floating right rail, sidebar widget, and sticky outline header.",
   "custom": {
     "popup": true,
     "rail": true,
     "sidebar": true,
+    "sticky": true,
     "min_headings": 1
   }
 }

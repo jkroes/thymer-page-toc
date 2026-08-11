@@ -27,6 +27,10 @@ var plugins = (() => {
   var STYLE_ID = "ptoc-style";
   var RAILS_ID = "ptoc-rails";
   var POPUP_ID = "ptoc-popup";
+  var STICKY_ID = "ptoc-sticky";
+  var STICKY_ROWH = 24;
+  var STICKY_PADV = 8;
+  var STICKY_MAX = 4;
   var ACTION = "plugin.toc";
   var RAIL_ACTION = "plugin.tocrail";
   var SCROLLBAR_STYLE_ID = "ptoc-scrollbar-style";
@@ -120,6 +124,27 @@ var plugins = (() => {
 .ptoc-settings input[type=checkbox] { width: 16px; height: 16px; accent-color: #6a8dff; }
 .ptoc-settings .ptoc-set-note { font-size: 11.5px; opacity: .55; margin-top: 18px; }
 
+/* ---- sticky header ---- */
+/* Crumbs are absolutely positioned at per-frame computed y's (CSS-sticky
+   emulation: dock at slot, push-out by the subtree's terminator). DOM order is
+   deepest-first so a pushed crumb slides UNDER the shallower one above it. */
+#${STICKY_ID} .ptoc-bar { position: fixed; z-index: 460; pointer-events: none;
+  overflow: hidden; box-sizing: border-box;
+  background: var(--panel-bg-color, #1e1e1e);
+  border-bottom: 1px solid var(--divider-color, rgba(128,128,128,.25));
+  box-shadow: 0 8px 14px -8px rgba(0,0,0,.5); }
+#${STICKY_ID} .ptoc-crumb { pointer-events: auto; cursor: pointer; position: absolute;
+  left: 0; right: 0; height: ${STICKY_ROWH}px;
+  line-height: ${STICKY_ROWH}px; font-size: 13px; padding-right: 10px; box-sizing: border-box;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  background: var(--panel-bg-color, #1e1e1e);
+  color: var(--panel-fg-color, #ccc); }
+#${STICKY_ID} .ptoc-crumb:hover { background: var(--side-bg-focus, rgba(128,128,128,.18)); }
+#${STICKY_ID} .ptoc-crumb.ptoc-crumb-h { font-weight: 600; color: var(--ed-text-color, #eee); }
+#${STICKY_ID} .ptoc-crumb .ptoc-dot { opacity: .5; margin-right: 8px; font-size: 9px;
+  vertical-align: 1px; }
+#${STICKY_ID} .ptoc-crumb.ptoc-crumb-more { pointer-events: none; opacity: .5; }
+
 /* ---- jump flash ---- */
 .ptoc-flash { position: fixed; z-index: 470; pointer-events: none; border-radius: 4px;
   background: rgba(120,160,255,.25); transition: opacity .9s ease; }
@@ -131,6 +156,7 @@ var plugins = (() => {
     onLoad() {
       this._handlers = [];
       this._model = /* @__PURE__ */ new Map();
+      this._outline = /* @__PURE__ */ new Map();
       this._activeByRec = /* @__PURE__ */ new Map();
       this._popup = null;
       this._sidebar = null;
@@ -141,6 +167,7 @@ var plugins = (() => {
         popup: custom.popup !== false,
         rail: custom.rail !== false,
         sidebar: custom.sidebar !== false,
+        sticky: custom.sticky !== false,
         minHeadings: Number(custom.min_headings) || 1
       };
       if (!document.getElementById(STYLE_ID)) {
@@ -152,6 +179,9 @@ var plugins = (() => {
       this._railsRoot = document.createElement("div");
       this._railsRoot.id = RAILS_ID;
       document.body.appendChild(this._railsRoot);
+      this._stickyRoot = document.createElement("div");
+      this._stickyRoot.id = STICKY_ID;
+      document.body.appendChild(this._stickyRoot);
       if (this._cfg.popup) {
         this.ui.addCommandPaletteCommand({
           label: "Page TOC: Show TOC",
@@ -188,6 +218,7 @@ var plugins = (() => {
       ])
         this._handlers.push(this.events.on(ev, () => {
           this._model.clear();
+          this._outline.clear();
           this._refreshSoon(300);
         }));
       this._onScroll = () => this._scheduleReposition();
@@ -226,6 +257,7 @@ var plugins = (() => {
       this._closeRailKb();
       this._sidebar?.remove();
       this._railsRoot?.remove();
+      this._stickyRoot?.remove();
       document.getElementById(STYLE_ID)?.remove();
       document.getElementById(SCROLLBAR_STYLE_ID)?.remove();
       document.querySelectorAll(`[data-action="${ACTION}"].ptoc-action`).forEach((b) => b.remove());
@@ -243,6 +275,7 @@ var plugins = (() => {
         }
       }
       if (which === "rail" && !on && this._kb) this._closeRailKb();
+      if (which === "sticky" && !on && this._stickyRoot) this._stickyRoot.textContent = "";
       this._syncScrollbarStyle();
       this._refreshSoon(50);
     }
@@ -269,7 +302,8 @@ var plugins = (() => {
       const rows = [
         ["popup", "Command popup", "Centered keyboard-navigable TOC (\u2318G / palette)"],
         ["rail", "Right rail", "Tick rail with hover card and scroll-spy (\u2303G); hides Thymer's scrollbar"],
-        ["sidebar", "Sidebar outline", '"On this page" section in the sidebar']
+        ["sidebar", "Sidebar outline", '"On this page" section in the sidebar'],
+        ["sticky", "Sticky outline header", "Pins the ancestors (and section headings) of the topmost visible line to the top of the panel"]
       ];
       for (const [key, title, desc] of rows) {
         const label = document.createElement("label");
@@ -338,6 +372,86 @@ var plugins = (() => {
     async _childrenOf(item) {
       if (typeof item.getChildren === "function") return await item.getChildren() || [];
       return Array.isArray(item.children) ? item.children : [];
+    }
+    // Full outline model for the sticky header. Real tree from parent_guid, then an
+    // AUGMENTED tree where headings become virtual parents of the sibling lines
+    // that follow them (until a heading of the same-or-bigger size) — so the
+    // pinned-stack resolution treats outline levels and heading sections uniformly.
+    async _outlineFor(rec) {
+      const cached = this._outline.get(rec.guid);
+      if (cached) return cached;
+      const byGuid = /* @__PURE__ */ new Map();
+      const kidsReal = /* @__PURE__ */ new Map();
+      const docOrder = [];
+      const top = await rec.getLineItems();
+      const visited = /* @__PURE__ */ new Set();
+      const walk = /* @__PURE__ */ __name(async (list, parentGuid, depth) => {
+        for (const item of list || []) {
+          if (!item || visited.has(item.guid)) continue;
+          visited.add(item.guid);
+          const text = (item.segments || []).map((s) => s.text || "").join("").trim();
+          let hsize = 2;
+          if (item.type === "heading") {
+            try {
+              hsize = item.getHeadingSize?.() ?? 2;
+            } catch {
+            }
+          }
+          byGuid.set(item.guid, {
+            guid: item.guid,
+            text,
+            type: item.type || "",
+            hsize,
+            realDepth: depth
+          });
+          if (!kidsReal.has(parentGuid)) kidsReal.set(parentGuid, []);
+          kidsReal.get(parentGuid).push(item.guid);
+          docOrder.push(item.guid);
+          const ch = await this._childrenOf(item);
+          await walk(
+            (ch || []).filter((k) => k && k.parent_guid === item.guid),
+            item.guid,
+            depth + 1
+          );
+        }
+      }, "walk");
+      await walk(top, "", 0);
+      const augKids = /* @__PURE__ */ new Map();
+      const addKid = /* @__PURE__ */ __name((p, g) => {
+        if (!augKids.has(p)) augKids.set(p, []);
+        augKids.get(p).push(g);
+      }, "addKid");
+      for (const [p, list] of kidsReal) {
+        const stack = [];
+        for (const g of list) {
+          const n = byGuid.get(g);
+          if (n.type === "heading")
+            while (stack.length && stack[stack.length - 1].hsize >= n.hsize)
+              stack.pop();
+          addKid(stack.length ? stack[stack.length - 1].guid : p, g);
+          if (n.type === "heading") stack.push(n);
+        }
+      }
+      docOrder.forEach((g, i) => {
+        byGuid.get(g).docIndex = i;
+      });
+      const setDepth = /* @__PURE__ */ __name((p, d) => {
+        for (const g of augKids.get(p) || []) {
+          byGuid.get(g).augDepth = d;
+          setDepth(g, d + 1);
+        }
+      }, "setDepth");
+      setDepth("", 0);
+      const model = { byGuid, augKids, docOrder };
+      if (byGuid.size) this._outline.set(rec.guid, model);
+      return model;
+    }
+    // First line after `node`'s augmented subtree (its scope terminator), as a
+    // docOrder index; -1 = the subtree runs to the end of the document.
+    _stickyTermIndex(o, node) {
+      for (let i = node.docIndex + 1; i < o.docOrder.length; i++)
+        if (o.byGuid.get(o.docOrder[i]).augDepth <= node.augDepth) return i;
+      return -1;
     }
     _editorPanes() {
       let panels = null;
@@ -426,7 +540,10 @@ var plugins = (() => {
     async _refresh() {
       if (this._kb && !this._kb.rail.isConnected) this._closeRailKb();
       const panes = this._editorPanes();
-      for (const pane of panes) pane.toc = await this._tocFor(pane.rec);
+      for (const pane of panes) {
+        pane.toc = await this._tocFor(pane.rec);
+        if (this._cfg.sticky) pane.outline = await this._outlineFor(pane.rec);
+      }
       this._panes = panes;
       this._resizeObs?.disconnect();
       for (const pane of panes) {
@@ -434,6 +551,7 @@ var plugins = (() => {
         if (panelEl) this._resizeObs?.observe(panelEl);
       }
       this._renderRails(panes);
+      this._renderSticky(panes);
       this._renderSidebarSoon();
       this._ensureActionButtons();
     }
@@ -453,6 +571,7 @@ var plugins = (() => {
         if (this._scrollSpy(pane) !== prev) changed = true;
       }
       this._renderRails(this._panes);
+      this._renderSticky(this._panes);
       if (changed) this._renderSidebarSoon();
     }
     // ---- 1) POPUP ----
@@ -716,6 +835,154 @@ var plugins = (() => {
       }
       this._activeByRec.set(pane.recGuid, active);
       return active;
+    }
+    // ---- 4) STICKY HEADER ----
+    _renderSticky(panes) {
+      const root = this._stickyRoot;
+      if (!root) return;
+      if (!this._cfg.sticky) {
+        if (root.childElementCount) root.textContent = "";
+        return;
+      }
+      const seen = /* @__PURE__ */ new Set();
+      for (const pane of panes || []) {
+        if (!pane.outline || !pane.el?.isConnected) continue;
+        this._renderStickyPane(pane);
+        seen.add(pane.recGuid);
+      }
+      for (const el of [...root.children])
+        if (!seen.has(el.dataset.rec)) el.remove();
+    }
+    // CSS-sticky emulation (RemNote semantics): walking the augmented tree top-down,
+    // a node PINS the moment its row top reaches its slot in the bar (it "docks" —
+    // visually freezing in place), stays while its subtree spans the slot line, and
+    // is PUSHED OUT pixel-by-pixel by its terminator (the next line outside its
+    // subtree) — offset = min(0, terminatorTop - slotBottom). Leaves never pin;
+    // they just slide under the bar edge.
+    _renderStickyPane(pane) {
+      const root = this._stickyRoot;
+      let bar = root.querySelector(`.ptoc-bar[data-rec="${pane.recGuid}"]`);
+      const scroller = pane.el.querySelector(".panel-scroller-y") || pane.el.closest(".panel-scroller-y");
+      const sr = scroller?.getBoundingClientRect();
+      if (!sr || !sr.width || !sr.height) {
+        bar?.remove();
+        return;
+      }
+      const o = pane.outline;
+      const rowEls = [...pane.el.querySelectorAll(".listitem[data-guid]")];
+      if (!o.byGuid.size) {
+        bar?.remove();
+        if (rowEls.length) this._refreshSoon(300);
+        return;
+      }
+      if (!rowEls.length) {
+        bar?.remove();
+        return;
+      }
+      const rowByGuid = /* @__PURE__ */ new Map();
+      for (const el of rowEls) rowByGuid.set(el.getAttribute("data-guid"), el);
+      const firstIdx = o.byGuid.get(rowEls[0].getAttribute("data-guid"))?.docIndex ?? 0;
+      const lastIdx = o.byGuid.get(rowEls[rowEls.length - 1].getAttribute("data-guid"))?.docIndex ?? o.docOrder.length - 1;
+      const topOf = /* @__PURE__ */ __name((guid) => {
+        const el = rowByGuid.get(guid);
+        if (el) return el.getBoundingClientRect().top;
+        const n = o.byGuid.get(guid);
+        if (!n) return null;
+        if (n.docIndex < firstIdx) return -1e9;
+        if (n.docIndex > lastIdx) return 1e9;
+        return null;
+      }, "topOf");
+      let y = sr.top + STICKY_PADV / 2;
+      let level = o.augKids.get("") || [];
+      const chain = [];
+      for (let guard = 0; guard < 12; guard++) {
+        let cand = null;
+        for (const guid of level) {
+          const t = topOf(guid);
+          if (t === null) continue;
+          if (t > y) break;
+          cand = o.byGuid.get(guid);
+        }
+        if (!cand) break;
+        if (!(o.augKids.get(cand.guid) || []).length) break;
+        const ti = this._stickyTermIndex(o, cand);
+        const termT = ti < 0 ? 1e9 : topOf(o.docOrder[ti]) ?? 1e9;
+        if (termT <= y) break;
+        const off = Math.min(0, termT - (y + STICKY_ROWH));
+        chain.push({ n: cand, top: y + off, off });
+        y += STICKY_ROWH + off;
+        level = o.augKids.get(cand.guid) || [];
+      }
+      if (!chain.length) {
+        bar?.remove();
+        return;
+      }
+      let display = chain.map((c) => ({ guid: c.n.guid, n: c.n, top: c.top }));
+      const pushing = chain.some((c) => c.off < 0);
+      if (!pushing && display.length > STICKY_MAX) {
+        display = [
+          display[0],
+          { guid: "more", more: true },
+          ...display.slice(-(STICKY_MAX - 2))
+        ];
+        let yy = sr.top + STICKY_PADV / 2;
+        for (const d of display) {
+          d.top = yy;
+          yy += STICKY_ROWH;
+        }
+        y = yy;
+      }
+      const barH = y + STICKY_PADV / 2 - sr.top;
+      if (!bar) {
+        bar = document.createElement("div");
+        bar.className = "ptoc-bar";
+        bar.dataset.rec = pane.recGuid;
+        root.appendChild(bar);
+      }
+      Object.assign(bar.style, {
+        left: `${sr.left}px`,
+        top: `${sr.top}px`,
+        width: `${sr.width}px`,
+        height: `${barH}px`
+      });
+      const key = display.map((d) => d.guid).join("|");
+      if (bar.dataset.key !== key) {
+        bar.dataset.key = key;
+        bar.textContent = "";
+        const basePad = Math.max(8, rowEls[0].getBoundingClientRect().left - sr.left + 6);
+        for (let i = display.length - 1; i >= 0; i--) {
+          const d = display[i];
+          const el = document.createElement("div");
+          el.dataset.guid = d.guid;
+          if (d.more) {
+            el.className = "ptoc-crumb ptoc-crumb-more";
+            el.textContent = "\u22EF";
+            el.style.paddingLeft = `${basePad + 18}px`;
+            bar.appendChild(el);
+            continue;
+          }
+          const isHeading = d.n.type === "heading";
+          el.className = "ptoc-crumb" + (isHeading ? " ptoc-crumb-h" : "");
+          const row = rowByGuid.get(d.guid);
+          const inner = row?.querySelector('[style*="margin-left"]');
+          const ml = inner ? parseInt(inner.style.marginLeft) || 0 : d.n.realDepth * 30;
+          el.style.paddingLeft = `${Math.min(basePad + ml, sr.width * 0.5)}px`;
+          if (!isHeading) {
+            const dot = document.createElement("span");
+            dot.className = "ptoc-dot";
+            dot.textContent = "\u25CF";
+            el.appendChild(dot);
+          }
+          el.appendChild(document.createTextNode(d.n.text || "\u2026"));
+          el.title = d.n.text || "";
+          el.addEventListener("click", () => this._jump(pane.el, d.guid));
+          bar.appendChild(el);
+        }
+      }
+      for (const el of bar.children) {
+        const d = display.find((x) => x.guid === el.dataset.guid);
+        if (d) el.style.top = `${d.top - sr.top}px`;
+      }
     }
     // ---- 3) SIDEBAR WIDGET ----
     _mountSidebar() {
