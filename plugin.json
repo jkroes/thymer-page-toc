@@ -8,6 +8,7 @@
     "rail": true,
     "sidebar": true,
     "sticky": true,
+    "sticky_max_depth": 6,
     "min_headings": 1
   }
 }

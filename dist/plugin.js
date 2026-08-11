@@ -30,7 +30,6 @@ var plugins = (() => {
   var STICKY_ID = "ptoc-sticky";
   var STICKY_ROWH = 24;
   var STICKY_PADV = 8;
-  var STICKY_MAX = 4;
   var ACTION = "plugin.toc";
   var RAIL_ACTION = "plugin.tocrail";
   var SCROLLBAR_STYLE_ID = "ptoc-scrollbar-style";
@@ -134,16 +133,16 @@ var plugins = (() => {
   border-bottom: 1px solid var(--divider-color, rgba(128,128,128,.25));
   box-shadow: 0 8px 14px -8px rgba(0,0,0,.5); }
 #${STICKY_ID} .ptoc-crumb { pointer-events: auto; cursor: pointer; position: absolute;
-  left: 0; right: 0; height: ${STICKY_ROWH}px;
-  line-height: ${STICKY_ROWH}px; font-size: 13px; padding-right: 10px; box-sizing: border-box;
+  left: 0; right: 0; padding-right: 10px; box-sizing: border-box;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   background: var(--panel-bg-color, #1e1e1e);
   color: var(--panel-fg-color, #ccc); }
+/* height / line-height / font-size are set inline per crumb, copied from the
+   crumb's real editor row so pinned text matches the outline exactly */
 #${STICKY_ID} .ptoc-crumb:hover { background: var(--side-bg-focus, rgba(128,128,128,.18)); }
 #${STICKY_ID} .ptoc-crumb.ptoc-crumb-h { font-weight: 600; color: var(--ed-text-color, #eee); }
 #${STICKY_ID} .ptoc-crumb .ptoc-dot { opacity: .5; margin-right: 8px; font-size: 9px;
   vertical-align: 1px; }
-#${STICKY_ID} .ptoc-crumb.ptoc-crumb-more { pointer-events: none; opacity: .5; }
 
 /* ---- jump flash ---- */
 .ptoc-flash { position: fixed; z-index: 470; pointer-events: none; border-radius: 4px;
@@ -168,6 +167,8 @@ var plugins = (() => {
         rail: custom.rail !== false,
         sidebar: custom.sidebar !== false,
         sticky: custom.sticky !== false,
+        // max pinned rows before collapsing to first + ⋯ + rest; 0 = unlimited
+        stickyMaxDepth: custom.sticky_max_depth === void 0 ? 6 : Math.max(0, Number(custom.sticky_max_depth) || 0),
         minHeadings: Number(custom.min_headings) || 1
       };
       if (!document.getElementById(STYLE_ID)) {
@@ -317,6 +318,25 @@ var plugins = (() => {
         label.appendChild(text);
         box.appendChild(label);
       }
+      const depthLabel = document.createElement("label");
+      const depthInput = document.createElement("input");
+      depthInput.type = "number";
+      depthInput.min = "0";
+      depthInput.step = "1";
+      depthInput.style.width = "56px";
+      depthInput.value = String(this._cfg.stickyMaxDepth);
+      depthInput.addEventListener("change", () => {
+        const v = Math.max(0, Math.floor(Number(depthInput.value) || 0));
+        depthInput.value = String(v);
+        this._cfg.stickyMaxDepth = v;
+        this._pendingCfg = { ...this._pendingCfg || {}, sticky_max_depth: v };
+        this._refreshSoon(50);
+      });
+      const depthText = document.createElement("div");
+      depthText.innerHTML = `Sticky depth cap<span class="ptoc-set-desc">Pin only the first N outline levels (0 = unlimited)</span>`;
+      depthLabel.appendChild(depthInput);
+      depthLabel.appendChild(depthText);
+      box.appendChild(depthLabel);
       const note = document.createElement("div");
       note.className = "ptoc-set-note";
       note.textContent = "Saving reloads the plugin once. The popup toggle affects new sessions' palette commands.";
@@ -353,7 +373,7 @@ var plugins = (() => {
           if (!item || visited.has(item.guid)) continue;
           visited.add(item.guid);
           if (item.type === "heading") {
-            const text = (item.segments || []).map((s) => s.text || "").join("").trim();
+            const text = this._segText(item.segments);
             let hsize = 2;
             try {
               hsize = item.getHeadingSize?.() ?? 2;
@@ -373,6 +393,22 @@ var plugins = (() => {
       if (typeof item.getChildren === "function") return await item.getChildren() || [];
       return Array.isArray(item.children) ? item.children : [];
     }
+    // Segment text: a ref segment's `text` is an OBJECT, not a string — {guid, title},
+    // or just {guid} for refs that render the target's live name.
+    _segText(segs) {
+      return (segs || []).map((s) => {
+        if (typeof s.text === "string") return s.text;
+        if (!s.text) return "";
+        if (s.text.title || s.text.name) return s.text.title || s.text.name;
+        if (s.text.guid) {
+          try {
+            return this.data.getRecord(s.text.guid)?.getName?.() || "";
+          } catch {
+          }
+        }
+        return "";
+      }).join("").trim();
+    }
     // Full outline model for the sticky header. Real tree from parent_guid, then an
     // AUGMENTED tree where headings become virtual parents of the sibling lines
     // that follow them (until a heading of the same-or-bigger size) — so the
@@ -389,7 +425,7 @@ var plugins = (() => {
         for (const item of list || []) {
           if (!item || visited.has(item.guid)) continue;
           visited.add(item.guid);
-          const text = (item.segments || []).map((s) => s.text || "").join("").trim();
+          const text = this._segText(item.segments);
           let hsize = 2;
           if (item.type === "heading") {
             try {
@@ -486,7 +522,7 @@ var plugins = (() => {
       return panes;
     }
     // ---- jump (shared) ----
-    _jump(scopeEl, guid) {
+    _jump(scopeEl, guid, topOffset = 90) {
       const scope = scopeEl || document;
       const row = scope.querySelector(`.listitem[data-guid="${guid}"]`);
       if (!row) {
@@ -499,7 +535,7 @@ var plugins = (() => {
       const scroller = row.closest(".panel-scroller-y");
       if (scroller) {
         const top = row.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop;
-        scroller.scrollTo({ top: Math.max(0, top - 90), behavior: "smooth" });
+        scroller.scrollTo({ top: Math.max(0, top - topOffset), behavior: "smooth" });
       } else {
         row.scrollIntoView({ block: "start", behavior: "smooth" });
       }
@@ -868,6 +904,9 @@ var plugins = (() => {
         bar?.remove();
         return;
       }
+      const nativeBar = scroller.querySelector(".panel-bar--tabsbar");
+      const nbr = nativeBar?.getBoundingClientRect();
+      const barTop = nbr && nbr.height ? nbr.bottom : sr.top;
       const o = pane.outline;
       const rowEls = [...pane.el.querySelectorAll(".listitem[data-guid]")];
       if (!o.byGuid.size) {
@@ -892,10 +931,21 @@ var plugins = (() => {
         if (n.docIndex > lastIdx) return 1e9;
         return null;
       }, "topOf");
-      let y = sr.top + STICKY_PADV / 2;
+      const metricsOf = /* @__PURE__ */ __name((guid) => {
+        const row = rowByGuid.get(guid);
+        const el = row?.querySelector(".lineitem-text") || row;
+        if (!el) return { h: STICKY_ROWH, fs: "", lh: `${STICKY_ROWH}px` };
+        const cs = getComputedStyle(el);
+        let lh = parseFloat(cs.lineHeight);
+        if (!lh || Number.isNaN(lh)) lh = (parseFloat(cs.fontSize) || 16) * 1.45;
+        return { h: Math.ceil(lh) + 2, fs: cs.fontSize, lh: `${Math.ceil(lh) + 2}px` };
+      }, "metricsOf");
+      let y = barTop + STICKY_PADV / 2;
       let level = o.augKids.get("") || [];
+      const cap = this._cfg.stickyMaxDepth;
       const chain = [];
-      for (let guard = 0; guard < 12; guard++) {
+      for (let guard = 0; guard < 100; guard++) {
+        if (cap > 0 && chain.length >= cap) break;
         let cand = null;
         for (const guid of level) {
           const t = topOf(guid);
@@ -908,31 +958,18 @@ var plugins = (() => {
         const ti = this._stickyTermIndex(o, cand);
         const termT = ti < 0 ? 1e9 : topOf(o.docOrder[ti]) ?? 1e9;
         if (termT <= y) break;
-        const off = Math.min(0, termT - (y + STICKY_ROWH));
-        chain.push({ n: cand, top: y + off, off });
-        y += STICKY_ROWH + off;
+        const m = metricsOf(cand.guid);
+        const off = Math.min(0, termT - (y + m.h));
+        chain.push({ n: cand, top: y + off, off, m });
+        y += m.h + off;
         level = o.augKids.get(cand.guid) || [];
       }
       if (!chain.length) {
         bar?.remove();
         return;
       }
-      let display = chain.map((c) => ({ guid: c.n.guid, n: c.n, top: c.top }));
-      const pushing = chain.some((c) => c.off < 0);
-      if (!pushing && display.length > STICKY_MAX) {
-        display = [
-          display[0],
-          { guid: "more", more: true },
-          ...display.slice(-(STICKY_MAX - 2))
-        ];
-        let yy = sr.top + STICKY_PADV / 2;
-        for (const d of display) {
-          d.top = yy;
-          yy += STICKY_ROWH;
-        }
-        y = yy;
-      }
-      const barH = y + STICKY_PADV / 2 - sr.top;
+      const display = chain.map((c) => ({ guid: c.n.guid, n: c.n, top: c.top, m: c.m }));
+      const barH = y + STICKY_PADV / 2 - barTop;
       if (!bar) {
         bar = document.createElement("div");
         bar.className = "ptoc-bar";
@@ -941,32 +978,32 @@ var plugins = (() => {
       }
       Object.assign(bar.style, {
         left: `${sr.left}px`,
-        top: `${sr.top}px`,
+        top: `${barTop}px`,
         width: `${sr.width}px`,
         height: `${barH}px`
       });
-      const key = display.map((d) => d.guid).join("|");
+      const key = display.map((d) => `${d.guid}:${d.m.h}:${d.m.fs}`).join("|");
       if (bar.dataset.key !== key) {
         bar.dataset.key = key;
         bar.textContent = "";
         const basePad = Math.max(8, rowEls[0].getBoundingClientRect().left - sr.left + 6);
+        const prefixH = [];
+        display.reduce((acc, d, i) => {
+          prefixH[i] = acc;
+          return acc + d.m.h;
+        }, 0);
         for (let i = display.length - 1; i >= 0; i--) {
           const d = display[i];
           const el = document.createElement("div");
           el.dataset.guid = d.guid;
-          if (d.more) {
-            el.className = "ptoc-crumb ptoc-crumb-more";
-            el.textContent = "\u22EF";
-            el.style.paddingLeft = `${basePad + 18}px`;
-            bar.appendChild(el);
-            continue;
-          }
+          Object.assign(el.style, {
+            height: `${d.m.h}px`,
+            lineHeight: d.m.lh,
+            ...d.m.fs ? { fontSize: d.m.fs } : {}
+          });
           const isHeading = d.n.type === "heading";
           el.className = "ptoc-crumb" + (isHeading ? " ptoc-crumb-h" : "");
-          const row = rowByGuid.get(d.guid);
-          const inner = row?.querySelector('[style*="margin-left"]');
-          const ml = inner ? parseInt(inner.style.marginLeft) || 0 : d.n.realDepth * 30;
-          el.style.paddingLeft = `${Math.min(basePad + ml, sr.width * 0.5)}px`;
+          el.style.paddingLeft = `${basePad}px`;
           if (!isHeading) {
             const dot = document.createElement("span");
             dot.className = "ptoc-dot";
@@ -975,13 +1012,14 @@ var plugins = (() => {
           }
           el.appendChild(document.createTextNode(d.n.text || "\u2026"));
           el.title = d.n.text || "";
-          el.addEventListener("click", () => this._jump(pane.el, d.guid));
+          const slotOffset = barTop - sr.top + STICKY_PADV / 2 + prefixH[i] + 4;
+          el.addEventListener("click", () => this._jump(pane.el, d.guid, slotOffset));
           bar.appendChild(el);
         }
       }
       for (const el of bar.children) {
         const d = display.find((x) => x.guid === el.dataset.guid);
-        if (d) el.style.top = `${d.top - sr.top}px`;
+        if (d) el.style.top = `${d.top - barTop}px`;
       }
     }
     // ---- 3) SIDEBAR WIDGET ----
