@@ -120,15 +120,16 @@ const CSS = `
 /* Crumbs are absolutely positioned at per-frame computed y's (CSS-sticky
    emulation: dock at slot, push-out by the subtree's terminator). DOM order is
    deepest-first so a pushed crumb slides UNDER the shallower one above it. */
+/* background is set inline, sampled from the editor's real computed background,
+   so the bar reads as a seamless part of the content (no border/shadow — the
+   clipped line beneath is the boundary cue, as in RemNote) */
 #${STICKY_ID} .ptoc-bar { position: fixed; z-index: 460; pointer-events: none;
   overflow: hidden; box-sizing: border-box;
-  background: var(--panel-bg-color, #1e1e1e);
-  border-bottom: 1px solid var(--divider-color, rgba(128,128,128,.25));
-  box-shadow: 0 8px 14px -8px rgba(0,0,0,.5); }
+  background: var(--ptoc-bg, var(--panel-bg-color, #1e1e1e)); }
 #${STICKY_ID} .ptoc-crumb { pointer-events: auto; cursor: pointer; position: absolute;
   left: 0; right: 0; padding-right: 10px; box-sizing: border-box;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  background: var(--panel-bg-color, #1e1e1e);
+  background: var(--ptoc-bg, var(--panel-bg-color, #1e1e1e));
   color: var(--panel-fg-color, #ccc); }
 /* height / line-height / font-size are set inline per crumb, copied from the
    crumb's real editor row so pinned text matches the outline exactly */
@@ -968,10 +969,21 @@ export class Plugin extends AppPlugin {
             bar.dataset.rec = pane.recGuid;
             root.appendChild(bar);
         }
+        // seamless: use the editor's real computed background (custom CSS themes
+        // the content area; the generic panel token can differ from it)
+        let bg = "";
+        for (let el = rowEls[0]; el && el !== document.documentElement; el = el.parentElement) {
+            const c = getComputedStyle(el).backgroundColor;
+            if (c && c !== "transparent" && !/rgba\(\s*\d+,\s*\d+,\s*\d+,\s*0\)/.test(c)) {
+                bg = c;
+                break;
+            }
+        }
         Object.assign(bar.style, {
             left: `${sr.left}px`, top: `${barTop}px`, width: `${sr.width}px`,
             height: `${barH}px`,
         });
+        if (bg) bar.style.setProperty("--ptoc-bg", bg);
 
         // metrics are part of the key: a rebuild during a Thymer re-render can read
         // degraded rows (no .lineitem-text yet) — recovering metrics must re-render
