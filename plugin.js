@@ -135,8 +135,7 @@ const CSS = `
    crumb's real editor row so pinned text matches the outline exactly */
 #${STICKY_ID} .ptoc-crumb:hover { background: var(--side-bg-focus, rgba(128,128,128,.18)); }
 #${STICKY_ID} .ptoc-crumb.ptoc-crumb-h { font-weight: 600; color: var(--ed-text-color, #eee); }
-#${STICKY_ID} .ptoc-crumb .ptoc-dot { opacity: .5; margin-right: 8px; font-size: 9px;
-  vertical-align: 1px; }
+#${STICKY_ID} .ptoc-crumb .ptoc-dot { position: absolute; opacity: .5; font-size: 9px; }
 
 /* ---- jump flash ---- */
 .ptoc-flash { position: fixed; z-index: 470; pointer-events: none; border-radius: 4px;
@@ -931,6 +930,18 @@ export class Plugin extends AppPlugin {
             return { h: Math.ceil(lh) + 2, fs: cs.fontSize, lh: `${Math.ceil(lh) + 2}px` };
         };
 
+        // Mirror the editor's indentation EXACTLY: measure the rendered row's text
+        // left edge. Fallback for rows virtualized out of the DOM: the editor
+        // indents 30px per real-tree level, and non-heading rows sit a further
+        // 8px in (their bullet occupies that gap).
+        const baseLeft = rowEls[0].getBoundingClientRect().left;
+        const indentOf = (guid) => {
+            const t = rowByGuid.get(guid)?.querySelector(".lineitem-text");
+            if (t) return Math.max(0, Math.round(t.getBoundingClientRect().left - baseLeft));
+            const n = o.byGuid.get(guid);
+            return (n?.realDepth || 0) * 30 + (n?.type === "heading" ? 0 : 8);
+        };
+
         let y = barTop + STICKY_PADV / 2;
         let level = o.augKids.get("") || [];
         const cap = this._cfg.stickyMaxDepth; // 0 = unlimited
@@ -960,7 +971,9 @@ export class Plugin extends AppPlugin {
 
         if (!chain.length) { bar?.remove(); return; }
 
-        const display = chain.map((c) => ({ guid: c.n.guid, n: c.n, top: c.top, m: c.m }));
+        const display = chain.map((c) => ({
+            guid: c.n.guid, n: c.n, top: c.top, m: c.m, ind: indentOf(c.n.guid),
+        }));
         const barH = (y + STICKY_PADV / 2) - barTop;
 
         if (!bar) {
@@ -987,13 +1000,13 @@ export class Plugin extends AppPlugin {
 
         // metrics are part of the key: a rebuild during a Thymer re-render can read
         // degraded rows (no .lineitem-text yet) — recovering metrics must re-render
-        const key = display.map((d) => `${d.guid}:${d.m.h}:${d.m.fs}`).join("|");
+        const key = display.map((d) => `${d.guid}:${d.m.h}:${d.m.fs}:${d.ind}`).join("|");
         if (bar.dataset.key !== key) {
             bar.dataset.key = key;
             bar.textContent = "";
             // Rows all share rect.left — the indent is an inline margin-left (30px
             // steps) on an inner element. Baseline = any rendered row's left edge.
-            const basePad = Math.max(8, rowEls[0].getBoundingClientRect().left - sr.left + 6);
+            const basePad = Math.max(0, baseLeft - sr.left);
             const prefixH = []; // total crumb height above display[i]
             display.reduce((acc, d, i) => { prefixH[i] = acc; return acc + d.m.h; }, 0);
             // deepest first: during a push the deeper crumb slides UNDER the shallower
@@ -1007,13 +1020,14 @@ export class Plugin extends AppPlugin {
                 });
                 const isHeading = d.n.type === "heading";
                 el.className = "ptoc-crumb" + (isHeading ? " ptoc-crumb-h" : "");
-                // all crumbs flush left at the content margin, like headings —
-                // the pin order already conveys the hierarchy
-                el.style.paddingLeft = `${basePad}px`;
+                // crumb text starts exactly where the row's text starts; the dot
+                // sits absolutely in the bullet gap so it never pushes the text
+                el.style.paddingLeft = `${basePad + d.ind}px`;
                 if (!isHeading) {
                     const dot = document.createElement("span");
                     dot.className = "ptoc-dot";
                     dot.textContent = "●";
+                    dot.style.left = `${basePad + d.ind - 14}px`;
                     el.appendChild(dot);
                 }
                 el.appendChild(document.createTextNode(d.n.text || "…"));

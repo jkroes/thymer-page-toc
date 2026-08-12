@@ -58,8 +58,17 @@ One AppPlugin, FOUR TOC surfaces (three built 2026-08-10, sticky added 2026-08-1
    reported). Crumbs render at the real row's typography (font-size/line-height
    from `span.lineitem-text` — the row element lies, reporting 15px even for
    headings; metrics are part of the rebuild key so a rebuild during a Thymer
-   re-render self-heals), flush left at the content margin like headings, with
-   dots marking non-heading lines. Segment text: a ref segment's `text` is an
+   re-render self-heals), and each crumb keeps its row's editor indentation
+   PIXEL-EXACT (2026-08-11, replacing an earlier flush-left flattening): crumb
+   padding-left = the rendered row's `.lineitem-text` left edge (measured), so
+   heading vs bullet-gap offsets come along for free; fallback when the row is
+   virtualized out of the DOM = `realDepth × 30 + (heading ? 0 : 8)` — the
+   editor indents via an inline margin-left in 30px-per-real-tree-level steps,
+   non-heading text sits 8px further in (verified equal on live data; note MCP
+   `get_line_items` "children" arrays show heading-section membership, but
+   `parent_guid` is the real tree and is what the editor indents by). Dots mark
+   non-heading lines, absolutely positioned in the bullet gap (14px left of the
+   text) so they never push the text off the row's alignment. Segment text: a ref segment's `text` is an
    OBJECT — `{guid, title}` or just `{guid}`; title-less refs resolve via
    `data.getRecord(guid).getName()` (`_segText`, shared with the heading model).
    Click = shared jump with a `topOffset` that lands the line just below the
