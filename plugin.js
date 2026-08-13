@@ -229,6 +229,19 @@ export class Plugin extends AppPlugin {
             if (rail) this._suppressHover(rail);
         };
         document.addEventListener("keydown", this._onKeyGlobal, { capture: true });
+        // Arrow-key navigation can land the caret on a row hidden under the sticky
+        // bar (the editor can't know a fixed overlay covers it — and it draws its
+        // caret itself as .listview-caret-self, so there's no selectionchange to
+        // hook). After every keystroke, check the caret's geometry once the editor
+        // has moved it (rAF for the sync case, a timeout for deferred renders) and
+        // scroll the panel down until it clears the bar.
+        this._onKeyReveal = () => {
+            cancelAnimationFrame(this._revealRaf);
+            clearTimeout(this._revealTimer);
+            this._revealRaf = requestAnimationFrame(() => this._revealCaret(0));
+            this._revealTimer = setTimeout(() => this._revealCaret(0), 80);
+        };
+        document.addEventListener("keydown", this._onKeyReveal, { capture: true });
         // Panel-divider drags resize panels without a window resize event.
         this._resizeObs = new ResizeObserver(() => this._scheduleReposition());
         // Collapses/virtualization/re-renders fire no events — a slow tick catches them.
@@ -252,6 +265,9 @@ export class Plugin extends AppPlugin {
         document.removeEventListener("scroll", this._onScroll, { capture: true });
         window.removeEventListener("resize", this._onResize);
         document.removeEventListener("keydown", this._onKeyGlobal, { capture: true });
+        document.removeEventListener("keydown", this._onKeyReveal, { capture: true });
+        cancelAnimationFrame(this._revealRaf);
+        clearTimeout(this._revealTimer);
         this._closePopup();
         this._closeRailKb();
         this._sidebar?.remove();
@@ -1048,6 +1064,32 @@ export class Plugin extends AppPlugin {
             if (!d) continue;
             el.style.top = `${d.top - barTop}px`;
             el.style.right = `${rightOff}px`;
+        }
+    }
+
+    // The caret must never sit under the bar: navigating up would leave the
+    // cursor invisible (RemNote scrolls the page down to reveal it; so do we).
+    // Thymer's caret is its own overlay DIV (.listview-caret-self), zero-rect
+    // when the panel is unfocused. Scrolling changes which crumbs pin, so the
+    // bar can grow/shrink after the first correction — re-check for a few
+    // frames until the caret is clear.
+    _revealCaret(iter) {
+        if (!this._cfg.sticky || !this._stickyRoot?.childElementCount) return;
+        for (const caret of document.querySelectorAll(".listview-caret-self")) {
+            const cr = caret.getBoundingClientRect();
+            const scroller = cr.height ? caret.closest(".panel-scroller-y") : null;
+            if (!scroller) continue;
+            for (const bar of this._stickyRoot.children) {
+                const br = bar.getBoundingClientRect();
+                // the caret's own panel's bar is the one it horizontally overlaps
+                if (!br.height || cr.right <= br.left || cr.left >= br.right) continue;
+                if (cr.top >= br.bottom - 1) break; // clear of the bar — visible
+                scroller.scrollTop -= Math.ceil(br.bottom - cr.top) + 2;
+                this._reposition(); // re-resolve the pinned chain at the new scroll
+                if (iter < 4)
+                    this._revealRaf = requestAnimationFrame(() => this._revealCaret(iter + 1));
+                break;
+            }
         }
     }
 
